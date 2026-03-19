@@ -7,7 +7,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup
 
-API_TOKEN = os.getenv("API_TOKEN")
+API_TOKEN = os.getenv("8632548132:AAFY5z3rURfCWYcxuYEnmjqriQ_QckSjrwg")
 
 logging.basicConfig(level=logging.INFO)
 
