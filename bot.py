@@ -1,9 +1,8 @@
 import os
 import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils.executor import start_webhook
+from aiogram.utils import executor
 from aiogram.types import (
-    InputFile,
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardButton,
@@ -16,13 +15,6 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = os.getenv("API_TOKEN")
-
-# Render автоматически даёт этот URL
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
-WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-
-PORT = int(os.environ.get("PORT", 10000))
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -148,26 +140,6 @@ async def delete_car(callback_query: types.CallbackQuery):
 
     await callback_query.message.answer(f"Машина '{name}' удалена!")
 
-# ===================== WEBHOOK =====================
-async def on_startup(dp):
-    if not WEBHOOK_HOST:
-        raise ValueError("❌ Нет RENDER_EXTERNAL_URL")
-
-    await bot.delete_webhook()
-    await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"Webhook установлен: {WEBHOOK_URL}")
-
-async def on_shutdown(dp):
-    await bot.delete_webhook()
-
 # ===================== ЗАПУСК =====================
 if __name__ == "__main__":
-    start_webhook(
-        dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,
-        host="0.0.0.0",
-        port=PORT,
-    )
+    executor.start_polling(dp, skip_updates=True)
