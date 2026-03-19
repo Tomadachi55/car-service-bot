@@ -1,5 +1,6 @@
 import os
 import logging
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils.executor import start_webhook
 from aiogram.types import InputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,12 +11,15 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = os.getenv("API_TOKEN")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # https://car-service-bot-ubk9.onrender.com
-PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")  # https://your-app.onrender.com
 
-# Сделаем уникальный путь для вебхука
+if not WEBHOOK_HOST:
+    raise RuntimeError("Переменная RENDER_EXTERNAL_URL не задана!")
+
 WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+PORT = int(os.environ.get("PORT", 8000))
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -140,9 +144,14 @@ async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
     logging.info(f"Webhook установлен: {WEBHOOK_URL}")
 
+    # Проверка webhook через Telegram API
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"https://api.telegram.org/bot{API_TOKEN}/getWebhookInfo") as resp:
+            info = await resp.json()
+            logging.info(f"Webhook info: {info}")
+
 async def on_shutdown(dp):
     await bot.delete_webhook()
-    await bot.close()
 
 if __name__ == "__main__":
     start_webhook(
@@ -150,7 +159,7 @@ if __name__ == "__main__":
         webhook_path=WEBHOOK_PATH,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-        skip_updates=True,
+        skip_updates=True,  # игнорировать старые апдейты
         host="0.0.0.0",
         port=PORT,
     )
