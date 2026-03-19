@@ -1,64 +1,44 @@
 import os
-import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils.executor import start_webhook
-from aiohttp import web
-from dotenv import load_dotenv
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.types import ParseMode
 
-# Загружаем .env
-load_dotenv()
+# ====== Настройки Render ======
+API_TOKEN = os.getenv("API_TOKEN")  # Твой токен бота из Environment Variables
+if not API_TOKEN:
+    raise RuntimeError("Не задан BOT_TOKEN в переменных окружения!")
 
-# Логирование
-logging.basicConfig(level=logging.INFO)
-
-# Конфиг из окружения
-API_TOKEN = os.getenv("API_TOKEN")  # Ваш токен Telegram
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://car-service-bot-ubk9.onrender.com")
-WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
+WEBHOOK_HOST = 'https://car-service-bot-ubk9.onrender.com'  # твой URL на Render
+WEBHOOK_PATH = f'/webhook/{API_TOKEN}'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-PORT = int(os.getenv("PORT", 8000))  # Render назначает порт через переменную PORT
-WEBAPP_HOST = "0.0.0.0"
+# Render предоставляет порт через переменную окружения PORT
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = int(os.environ.get('PORT', 8000))
 
-# Инициализация бота и диспетчера
-bot = Bot(token=API_TOKEN)
+# ====== Инициализация бота ======
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
 
-# ==========================
-# Хендлеры для Telegram
-# ==========================
-@dp.message_handler(commands=["start", "help"])
+# ====== Хендлеры ======
+@dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я Car Service Bot 🚗")
+    await message.answer("Бот запущен и работает!")
 
-@dp.message_handler(commands=["ping"])
-async def cmd_ping(message: types.Message):
-    await message.answer("Бот живой ✅")
-
-# ==========================
-# aiohttp web для Render
-# ==========================
-async def handle_root(request):
-    return web.Response(text="Car Service Bot is running 🚗")
-
-app = web.Application()
-app.router.add_get('/', handle_root)  # Чтобы Render Health Check не ругался
-
-# ==========================
-# Startup / Shutdown
-# ==========================
-async def on_startup(dp):
-    logging.info("Установка webhook...")
+# ====== Стартап и шаддаун ======
+async def on_startup(dispatcher):
     await bot.set_webhook(WEBHOOK_URL)
+    print(f"Webhook установлен: {WEBHOOK_URL}")
 
-async def on_shutdown(dp):
-    logging.info("Удаляем webhook...")
+async def on_shutdown(dispatcher):
+    print("Удаляем webhook...")
     await bot.delete_webhook()
+    print("Webhook удалён")
 
-# ==========================
-# Запуск webhook
-# ==========================
-if __name__ == "__main__":
+# ====== Запуск webhook ======
+if __name__ == '__main__':
     start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
@@ -66,6 +46,5 @@ if __name__ == "__main__":
         on_shutdown=on_shutdown,
         skip_updates=True,
         host=WEBAPP_HOST,
-        port=PORT,
-        web_app=app
+        port=WEBAPP_PORT
     )
