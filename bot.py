@@ -1,9 +1,14 @@
 import os
 import logging
-import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils.executor import start_webhook
-from aiogram.types import InputFile, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InputFile,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -11,24 +16,22 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = os.getenv("API_TOKEN")
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")  # https://your-app.onrender.com
 
-if not WEBHOOK_HOST:
-    raise RuntimeError("Переменная RENDER_EXTERNAL_URL не задана!")
-
+# Render автоматически даёт этот URL
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
 WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-PORT = int(os.environ.get("PORT", 8000))
+PORT = int(os.environ.get("PORT", 10000))
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# Хранилище данных (пока в памяти)
-cars = {}  # {id: {"name": str, "photo": file_id, "records": []}}
+# ===================== ДАННЫЕ =====================
+cars = {}
 
-# FSM для машин и записей
+# ===================== FSM =====================
 class AddCar(StatesGroup):
     waiting_name = State()
     waiting_photo = State()
@@ -38,23 +41,14 @@ class AddRecord(StatesGroup):
     waiting_price = State()
     waiting_date = State()
 
-# Клавиатуры
+# ===================== КЛАВИАТУРЫ =====================
 def cars_keyboard():
     kb = InlineKeyboardMarkup()
     for car_id, car in cars.items():
         kb.add(InlineKeyboardButton(car["name"], callback_data=f"car_{car_id}"))
     return kb
 
-def record_keyboard(car_id):
-    kb = InlineKeyboardMarkup()
-    for i, record in enumerate(cars[car_id]["records"]):
-        kb.add(
-            InlineKeyboardButton(f"{record['type']} | {record['price']} | {record['date']}",
-                                 callback_data=f"record_{car_id}_{i}")
-        )
-    return kb
-
-# Команды
+# ===================== КОМАНДЫ =====================
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -95,15 +89,25 @@ async def cmd_list_cars(message: types.Message):
 async def process_car(callback_query: types.CallbackQuery):
     car_id = int(callback_query.data.split("_")[1])
     car = cars[car_id]
-    text = f"Машина: {car['name']}\nЗаписи: {len(car['records'])}"
+
+    text = f"Машина: {car['name']}\nЗаписей: {len(car['records'])}"
+
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Добавить запись", callback_data=f"add_record_{car_id}"))
     kb.add(InlineKeyboardButton("Удалить машину", callback_data=f"del_car_{car_id}"))
-    await bot.send_photo(callback_query.from_user.id, car["photo"], caption=text, reply_markup=kb)
 
+    await bot.send_photo(
+        callback_query.from_user.id,
+        car["photo"],
+        caption=text,
+        reply_markup=kb
+    )
+
+# ===================== ЗАПИСИ =====================
 @dp.callback_query_handler(lambda c: c.data.startswith("add_record_"))
 async def add_record_start(callback_query: types.CallbackQuery):
     car_id = int(callback_query.data.split("_")[2])
+
     await callback_query.message.answer("Введите тип работы:")
     await AddRecord.waiting_type.set()
     await dp.current_state(user=callback_query.from_user.id).update_data(car_id=car_id)
@@ -117,49 +121,53 @@ async def process_record_type(message: types.Message, state: FSMContext):
 @dp.message_handler(state=AddRecord.waiting_price)
 async def process_record_price(message: types.Message, state: FSMContext):
     await state.update_data(price=message.text)
-    await message.answer("Введите дату (например, 2026-03-19):")
+    await message.answer("Введите дату (например 2026-03-19):")
     await AddRecord.waiting_date.set()
 
 @dp.message_handler(state=AddRecord.waiting_date)
 async def process_record_date(message: types.Message, state: FSMContext):
     data = await state.get_data()
     car_id = data["car_id"]
+
     cars[car_id]["records"].append({
         "type": data["type"],
         "price": data["price"],
         "date": message.text
     })
-    await message.answer(f"Запись добавлена для машины {cars[car_id]['name']}!")
+
+    await message.answer(f"Запись добавлена для {cars[car_id]['name']}!")
     await state.finish()
 
+# ===================== УДАЛЕНИЕ =====================
 @dp.callback_query_handler(lambda c: c.data.startswith("del_car_"))
 async def delete_car(callback_query: types.CallbackQuery):
     car_id = int(callback_query.data.split("_")[2])
     name = cars[car_id]["name"]
+
     del cars[car_id]
+
     await callback_query.message.answer(f"Машина '{name}' удалена!")
 
-# Startup webhook
+# ===================== WEBHOOK =====================
 async def on_startup(dp):
+    if not WEBHOOK_HOST:
+        raise ValueError("❌ Нет RENDER_EXTERNAL_URL")
+
+    await bot.delete_webhook()
     await bot.set_webhook(WEBHOOK_URL)
     logging.info(f"Webhook установлен: {WEBHOOK_URL}")
-
-    # Проверка webhook через Telegram API
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://api.telegram.org/bot{API_TOKEN}/getWebhookInfo") as resp:
-            info = await resp.json()
-            logging.info(f"Webhook info: {info}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
 
+# ===================== ЗАПУСК =====================
 if __name__ == "__main__":
     start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-        skip_updates=True,  # игнорировать старые апдейты
+        skip_updates=True,
         host="0.0.0.0",
         port=PORT,
     )
