@@ -1,162 +1,146 @@
+import json
 import os
-import sqlite3
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.executor import start_webhook
 from dotenv import load_dotenv
 
 load_dotenv()
-API_TOKEN = os.getenv("API_TOKEN")
+API_TOKEN = os.getenv("BOT_TOKEN")  # Ваш токен бота
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # URL вашего Render сервиса
+WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# ---------- База данных ----------
-DB_FILE = "cars.db"
+DATA_FILE = "cars_data.json"
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS cars (
-            user_id INTEGER,
-            car_name TEXT,
-            info TEXT,
-            PRIMARY KEY(user_id, car_name)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS records (
-            user_id INTEGER,
-            car_name TEXT,
-            record TEXT,
-            record_date TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+# ================= Helper Functions =================
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {}
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
-init_db()
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
-# ---------- Главные команды ----------
+# ================= Keyboards =================
+main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+main_kb.add(KeyboardButton("Добавить авто"))
+main_kb.add(KeyboardButton("Список авто"))
+main_kb.add(KeyboardButton("Добавить запись"))
+
+# ================= Handlers =================
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    await message.reply("Привет! Я твоя сервисная книжка 🚗\nВыбирай команду ниже:", reply_markup=main_menu())
+    await message.answer("Привет! Это бот для ведения записи по вашим авто 🚗", reply_markup=main_kb)
 
-def main_menu():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("➕ Добавить авто", callback_data="add_car"),
-        InlineKeyboardButton("📋 Мои авто", callback_data="list_cars")
-    )
-    return kb
+@dp.message_handler(lambda m: m.text == "Добавить авто")
+async def add_car(message: types.Message):
+    await message.answer("Введите марку и модель авто через пробел, например: Toyota Camry")
+    await dp.current_state(user=message.from_user.id).set_state("ADDING_CAR")
 
-# ---------- Добавление авто ----------
-@dp.callback_query_handler(lambda c: c.data == "add_car")
-async def add_car(call: types.CallbackQuery):
-    await call.message.answer("Введите название/марку автомобиля:")
-    dp.register_message_handler(receive_car_name, state=None)
+@dp.message_handler(state="ADDING_CAR")
+async def save_car(message: types.Message):
+    data = load_data()
+    user_id = str(message.from_user.id)
+    if user_id not in data:
+        data[user_id] = {"cars": {}, "records": {}}
+    car_id = str(len(data[user_id]["cars"]) + 1)
+    data[user_id]["cars"][car_id] = {"name": message.text, "records": []}
+    save_data(data)
+    await message.answer(f"Авто '{message.text}' добавлено ✅", reply_markup=main_kb)
+    await dp.current_state(user=message.from_user.id).reset_state()
 
-async def receive_car_name(message: types.Message):
-    user_id = message.from_user.id
-    car_name = message.text.strip()
-
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM cars WHERE user_id=? AND car_name=?", (user_id, car_name))
-    if cursor.fetchone():
-        await message.reply("Такое авто уже есть!")
-    else:
-        cursor.execute("INSERT INTO cars (user_id, car_name, info) VALUES (?, ?, ?)", (user_id, car_name, ""))
-        conn.commit()
-        await message.reply(f"Авто '{car_name}' добавлено!")
-    conn.close()
-    dp.unregister_message_handler(receive_car_name, state=None)
-
-# ---------- Список авто ----------
-@dp.callback_query_handler(lambda c: c.data == "list_cars")
-async def list_cars(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT car_name FROM cars WHERE user_id=?", (user_id,))
-    cars = cursor.fetchall()
-    conn.close()
-
-    if not cars:
-        await call.message.answer("У тебя пока нет авто. Добавь через '➕ Добавить авто'")
+@dp.message_handler(lambda m: m.text == "Список авто")
+async def list_cars(message: types.Message):
+    data = load_data()
+    user_id = str(message.from_user.id)
+    if user_id not in data or not data[user_id]["cars"]:
+        await message.answer("У вас пока нет добавленных авто.")
         return
+    cars_list = "\n".join([f"{cid}. {info['name']}" for cid, info in data[user_id]["cars"].items()])
+    await message.answer(f"Ваши авто:\n{cars_list}")
 
-    kb = InlineKeyboardMarkup(row_width=1)
-    for (car_name,) in cars:
-        kb.add(InlineKeyboardButton(car_name, callback_data=f"car_{car_name}"))
-    await call.message.answer("Выбери авто:", reply_markup=kb)
+@dp.message_handler(lambda m: m.text == "Добавить запись")
+async def add_record_step1(message: types.Message):
+    data = load_data()
+    user_id = str(message.from_user.id)
+    if user_id not in data or not data[user_id]["cars"]:
+        await message.answer("Сначала добавьте авто!")
+        return
+    cars_list = "\n".join([f"{cid}. {info['name']}" for cid, info in data[user_id]["cars"].items()])
+    await message.answer(f"Выберите авто по номеру:\n{cars_list}")
+    await dp.current_state(user=message.from_user.id).set_state("SELECT_CAR_FOR_RECORD")
 
-# ---------- Детали авто ----------
-@dp.callback_query_handler(lambda c: c.data.startswith("car_"))
-async def car_detail(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    car_name = call.data[4:]
+@dp.message_handler(state="SELECT_CAR_FOR_RECORD")
+async def select_car_for_record(message: types.Message):
+    data = load_data()
+    user_id = str(message.from_user.id)
+    car_id = message.text.strip()
+    if car_id not in data[user_id]["cars"]:
+        await message.answer("Неверный номер авто. Попробуйте снова.")
+        return
+    await dp.current_state(user=message.from_user.id).update_data(car_id=car_id)
+    await message.answer("Введите тип работы:")
+    await dp.current_state(user=message.from_user.id).set_state("RECORD_TYPE")
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT info FROM cars WHERE user_id=? AND car_name=?", (user_id, car_name))
-    car_info = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM records WHERE user_id=? AND car_name=?", (user_id, car_name))
-    record_count = cursor.fetchone()[0]
-    conn.close()
+@dp.message_handler(state="RECORD_TYPE")
+async def record_type(message: types.Message):
+    state_data = await dp.current_state(user=message.from_user.id).get_data()
+    await dp.current_state(user=message.from_user.id).update_data(record_type=message.text)
+    await message.answer("Введите стоимость работы:")
+    await dp.current_state(user=message.from_user.id).set_state("RECORD_COST")
 
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("📝 Добавить запись", callback_data=f"add_record_{car_name}"),
-        InlineKeyboardButton("📄 Показать историю", callback_data=f"show_history_{car_name}"),
-        InlineKeyboardButton("⬅️ Назад", callback_data="list_cars")
-    )
+@dp.message_handler(state="RECORD_COST")
+async def record_cost(message: types.Message):
+    if not message.text.isdigit():
+        await message.answer("Введите число для стоимости:")
+        return
+    await dp.current_state(user=message.from_user.id).update_data(record_cost=int(message.text))
+    await message.answer("Введите дату (например 2026-03-19):")
+    await dp.current_state(user=message.from_user.id).set_state("RECORD_DATE")
 
-    text = f"Авто: {car_name}\nИнформация: {car_info if car_info else 'Нет информации'}\nЗаписей: {record_count}"
-    await call.message.answer(text, reply_markup=kb)
+@dp.message_handler(state="RECORD_DATE")
+async def record_date(message: types.Message):
+    try:
+        datetime.strptime(message.text, "%Y-%m-%d")
+    except ValueError:
+        await message.answer("Неверный формат даты. Введите в формате YYYY-MM-DD")
+        return
+    state_data = await dp.current_state(user=message.from_user.id).get_data()
+    record = {
+        "type": state_data["record_type"],
+        "cost": state_data["record_cost"],
+        "date": message.text
+    }
+    data = load_data()
+    user_id = str(message.from_user.id)
+    car_id = state_data["car_id"]
+    data[user_id]["cars"][car_id]["records"].append(record)
+    save_data(data)
+    await message.answer("Запись добавлена ✅", reply_markup=main_kb)
+    await dp.current_state(user=message.from_user.id).reset_state()
 
-# ---------- Добавление записи ----------
-@dp.callback_query_handler(lambda c: c.data.startswith("add_record_"))
-async def add_record(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    car_name = call.data[len("add_record_"):]
-    await call.message.answer(f"Введите текст записи для '{car_name}':")
-    dp.register_message_handler(lambda message: receive_record(message, car_name), state=None)
+# ================= Webhook =================
+async def handle(request):
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return web.Response()
 
-async def receive_record(message: types.Message, car_name):
-    user_id = message.from_user.id
-    record = message.text.strip()
-    record_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle)
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO records (user_id, car_name, record, record_date) VALUES (?, ?, ?, ?)",
-                   (user_id, car_name, record, record_date))
-    conn.commit()
-    conn.close()
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
 
-    await message.reply(f"Запись добавлена для '{car_name}'!")
-    dp.unregister_message_handler(lambda message: receive_record(message, car_name), state=None)
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
-# ---------- История авто ----------
-@dp.callback_query_handler(lambda c: c.data.startswith("show_history_"))
-async def show_history(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    car_name = call.data[len("show_history_"):]
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT record, record_date FROM records WHERE user_id=? AND car_name=? ORDER BY record_date DESC",
-                   (user_id, car_name))
-    records = cursor.fetchall()
-    conn.close()
-
-    if not records:
-        await call.message.answer("История пустая.")
-    else:
-        text = "\n".join([f"{i+1}. [{date}] {r}" for i, (r, date) in enumerate(records)])
-        await call.message.answer(f"История для '{car_name}':\n{text}")
-
-# ---------- Запуск бота ----------
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
