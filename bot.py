@@ -8,7 +8,7 @@ from aiogram.utils.executor import start_webhook
 from dotenv import load_dotenv
 
 load_dotenv()
-API_TOKEN = os.getenv("BOT_TOKEN")  # Ваш токен бота
+API_TOKEN = os.getenv("API_TOKEN")  # Ваш токен бота
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # URL вашего Render сервиса
 WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
