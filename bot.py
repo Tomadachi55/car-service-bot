@@ -10,11 +10,12 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = os.getenv("API_TOKEN")
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")  # https://your-app.onrender.com
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # https://car-service-bot-ubk9.onrender.com
 PORT = int(os.environ.get("PORT", 8000))
+
+# Сделаем уникальный путь для вебхука
+WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -137,9 +138,11 @@ async def delete_car(callback_query: types.CallbackQuery):
 # Startup webhook
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
+    logging.info(f"Webhook установлен: {WEBHOOK_URL}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
+    await bot.close()
 
 if __name__ == "__main__":
     start_webhook(
