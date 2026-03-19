@@ -1,7 +1,7 @@
 import os
 import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.utils.executor import start_webhook
 from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -16,14 +16,21 @@ logging.basicConfig(level=logging.INFO)
 
 API_TOKEN = os.getenv("API_TOKEN")
 
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+# === WEBHOOK ===
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-# ===================== ДАННЫЕ =====================
+# ВАЖНО: порт берем только из Render
+PORT = int(os.environ.get("PORT", 10000))
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+
+# === ДАННЫЕ ===
 cars = {}
 
-# ===================== FSM =====================
+# === FSM ===
 class AddCar(StatesGroup):
     waiting_name = State()
     waiting_photo = State()
@@ -33,48 +40,51 @@ class AddRecord(StatesGroup):
     waiting_price = State()
     waiting_date = State()
 
-# ===================== КЛАВИАТУРЫ =====================
+# === КНОПКИ ===
 def cars_keyboard():
     kb = InlineKeyboardMarkup()
     for car_id, car in cars.items():
         kb.add(InlineKeyboardButton(car["name"], callback_data=f"car_{car_id}"))
     return kb
 
-# ===================== КОМАНДЫ =====================
+# === КОМАНДЫ ===
 @dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message):
+async def start(message: types.Message):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("/add_car"), KeyboardButton("/list_cars"))
-    await message.answer("Привет! Управляй машинами и записями.", reply_markup=kb)
+    kb.add("/add_car", "/list_cars")
+    await message.answer("Бот работает ✅", reply_markup=kb)
 
 @dp.message_handler(commands=["add_car"])
-async def cmd_add_car(message: types.Message):
+async def add_car(message: types.Message):
     await message.answer("Введите название машины:")
     await AddCar.waiting_name.set()
 
 @dp.message_handler(state=AddCar.waiting_name)
-async def process_car_name(message: types.Message, state: FSMContext):
+async def car_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await message.answer("Отправьте фото машины:")
     await AddCar.waiting_photo.set()
 
 @dp.message_handler(content_types=["photo"], state=AddCar.waiting_photo)
-async def process_car_photo(message: types.Message, state: FSMContext):
+async def car_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
     car_id = len(cars) + 1
+
     cars[car_id] = {
         "name": data["name"],
         "photo": message.photo[-1].file_id,
         "records": []
     }
+
     await message.answer(f"Машина '{data['name']}' добавлена!")
     await state.finish()
 
 @dp.message_handler(commands=["list_cars"])
-async def cmd_list_cars(message: types.Message):
+async def list_cars(message: types.Message):
     if not cars:
         await message.answer("Машин пока нет.")
         return
+
     await message.answer("Выберите машину:", reply_markup=cars_keyboard())
 
 @dp.callback_query_handler(lambda c: c.data.startswith("car_"))
@@ -95,7 +105,7 @@ async def process_car(callback_query: types.CallbackQuery):
         reply_markup=kb
     )
 
-# ===================== ЗАПИСИ =====================
+# === ЗАПИСИ ===
 @dp.callback_query_handler(lambda c: c.data.startswith("add_record_"))
 async def add_record_start(callback_query: types.CallbackQuery):
     car_id = int(callback_query.data.split("_")[2])
@@ -130,7 +140,7 @@ async def process_record_date(message: types.Message, state: FSMContext):
     await message.answer(f"Запись добавлена для {cars[car_id]['name']}!")
     await state.finish()
 
-# ===================== УДАЛЕНИЕ =====================
+# === УДАЛЕНИЕ ===
 @dp.callback_query_handler(lambda c: c.data.startswith("del_car_"))
 async def delete_car(callback_query: types.CallbackQuery):
     car_id = int(callback_query.data.split("_")[2])
@@ -140,6 +150,27 @@ async def delete_car(callback_query: types.CallbackQuery):
 
     await callback_query.message.answer(f"Машина '{name}' удалена!")
 
-# ===================== ЗАПУСК =====================
+# === WEBHOOK ===
+async def on_startup(dp):
+    if not WEBHOOK_HOST:
+        raise RuntimeError("❌ Нет RENDER_EXTERNAL_URL")
+
+    await bot.delete_webhook()
+    await bot.set_webhook(WEBHOOK_URL)
+
+    logging.info(f"Webhook установлен: {WEBHOOK_URL}")
+
+async def on_shutdown(dp):
+    await bot.delete_webhook()
+
+# === ЗАПУСК ===
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host="0.0.0.0",
+        port=PORT,
+    )
