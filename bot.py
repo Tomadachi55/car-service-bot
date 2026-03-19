@@ -12,7 +12,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 # Конфиг из окружения
-API_TOKEN = os.getenv("BOT_TOKEN")  # Ваш токен Telegram
+API_TOKEN = os.getenv("API_TOKEN")  # Ваш токен Telegram
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://car-service-bot-ubk9.onrender.com")
 WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
