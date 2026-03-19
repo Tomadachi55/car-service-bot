@@ -1,281 +1,199 @@
-# bot.py
+import os
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.executor import start_webhook
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
+
 API_TOKEN = os.getenv("API_TOKEN")
+WEBHOOK_HOST = os.getenv("WEBHOOK_URL")  # например https://your-app-name.onrender.com
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = int(os.environ.get('PORT', 8000))
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-# --- DATABASE ---
+# ================== Database ==================
 conn = sqlite3.connect("cars.db")
 cursor = conn.cursor()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS cars(
+cursor.execute("""CREATE TABLE IF NOT EXISTS cars (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     name TEXT,
     photo TEXT
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS records(
+)""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     car_id INTEGER,
     work_type TEXT,
-    cost REAL,
-    date TEXT,
-    FOREIGN KEY(car_id) REFERENCES cars(id)
-)
-""")
+    cost TEXT,
+    date TEXT
+)""")
 conn.commit()
 
-# --- STATES ---
-class CarStates(StatesGroup):
+# ================== States ==================
+class AddCar(StatesGroup):
     name = State()
     photo = State()
-    edit_name = State()
-    edit_photo = State()
 
-class RecordStates(StatesGroup):
+class AddRecord(StatesGroup):
+    car_id = State()
     work_type = State()
     cost = State()
     date = State()
-    edit_work_type = State()
-    edit_cost = State()
-    edit_date = State()
 
-# --- KEYBOARDS ---
-def car_options_kb(car_id):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Добавить запись", callback_data=f"add_record_{car_id}"))
-    kb.add(InlineKeyboardButton("Редактировать машину", callback_data=f"edit_car_{car_id}"))
-    kb.add(InlineKeyboardButton("Удалить машину", callback_data=f"delete_car_{car_id}"))
-    return kb
-
-def record_options_kb(record_id):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Редактировать запись", callback_data=f"edit_record_{record_id}"))
-    kb.add(InlineKeyboardButton("Удалить запись", callback_data=f"delete_record_{record_id}"))
-    return kb
-
-# --- COMMANDS ---
-@dp.message_handler(commands=["start"])
-async def start(msg: types.Message):
-    await msg.answer("Привет! Используй /add_car чтобы добавить машину или /list_cars для просмотра.")
-
-# --- ADD CAR ---
-@dp.message_handler(commands=["add_car"])
-async def add_car_start(msg: types.Message):
-    await msg.answer("Введите название машины:")
-    await CarStates.name.set()
-
-@dp.message_handler(state=CarStates.name)
-async def car_name(msg: types.Message, state: FSMContext):
-    await state.update_data(name=msg.text)
-    await msg.answer("Отправьте фото машины или /skip чтобы пропустить:")
-    await CarStates.photo.set()
-
-@dp.message_handler(content_types=['photo'], state=CarStates.photo)
-async def car_photo(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    name = data['name']
-    photo_file_id = msg.photo[-1].file_id
-    cursor.execute("INSERT INTO cars(name, photo) VALUES (?,?)", (name, photo_file_id))
-    conn.commit()
-    await msg.answer("Машина добавлена с фото!")
-    await state.finish()
-
-@dp.message_handler(commands=['skip'], state=CarStates.photo)
-async def skip_photo(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    name = data['name']
-    cursor.execute("INSERT INTO cars(name) VALUES (?)", (name,))
-    conn.commit()
-    await msg.answer("Машина добавлена без фото!")
-    await state.finish()
-
-# --- LIST CARS ---
-@dp.message_handler(commands=["list_cars"])
-async def list_cars(msg: types.Message):
-    cursor.execute("SELECT id, name, photo FROM cars")
+# ================== Helpers ==================
+def get_cars_keyboard(user_id):
+    cursor.execute("SELECT id, name FROM cars WHERE user_id=?", (user_id,))
     cars = cursor.fetchall()
-    if not cars:
-        await msg.answer("Машин нет.")
-        return
-    for car in cars:
-        car_id, name, photo = car
-        text = f"{name}"
-        if photo:
-            await msg.answer_photo(photo, caption=text, reply_markup=car_options_kb(car_id))
-        else:
-            await msg.answer(text, reply_markup=car_options_kb(car_id))
-
-# --- CALLBACK HANDLERS ---
-@dp.callback_query_handler(lambda c: c.data.startswith("delete_car_"))
-async def delete_car(cb: types.CallbackQuery):
-    car_id = int(cb.data.split("_")[2])
-    cursor.execute("DELETE FROM cars WHERE id=?", (car_id,))
-    cursor.execute("DELETE FROM records WHERE car_id=?", (car_id,))
-    conn.commit()
-    await cb.message.answer("Машина и все записи удалены!")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("edit_car_"))
-async def edit_car_start(cb: types.CallbackQuery, state: FSMContext):
-    car_id = int(cb.data.split("_")[2])
-    await state.update_data(car_id=car_id)
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Изменить название", callback_data="edit_car_name"))
-    kb.add(InlineKeyboardButton("Изменить фото", callback_data="edit_car_photo"))
-    await cb.message.answer("Выберите, что редактировать:", reply_markup=kb)
+    for car_id, name in cars:
+        kb.add(InlineKeyboardButton(text=name, callback_data=f"car_{car_id}"))
+    return kb
 
-@dp.callback_query_handler(lambda c: c.data=="edit_car_name", state="*")
-async def edit_car_name_cb(cb: types.CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введите новое название машины:")
-    await CarStates.edit_name.set()
-
-@dp.message_handler(state=CarStates.edit_name)
-async def edit_car_name(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    car_id = data['car_id']
-    cursor.execute("UPDATE cars SET name=? WHERE id=?", (msg.text, car_id))
-    conn.commit()
-    await msg.answer("Название машины обновлено!")
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data=="edit_car_photo", state="*")
-async def edit_car_photo_cb(cb: types.CallbackQuery, state: FSMContext):
-    await cb.message.answer("Отправьте новое фото или /skip чтобы оставить старое:")
-    await CarStates.edit_photo.set()
-
-@dp.message_handler(content_types=['photo'], state=CarStates.edit_photo)
-async def edit_car_photo(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    car_id = data['car_id']
-    photo_file_id = msg.photo[-1].file_id
-    cursor.execute("UPDATE cars SET photo=? WHERE id=?", (photo_file_id, car_id))
-    conn.commit()
-    await msg.answer("Фото машины обновлено!")
-    await state.finish()
-
-@dp.message_handler(commands=['skip'], state=CarStates.edit_photo)
-async def skip_edit_photo(msg: types.Message, state: FSMContext):
-    await msg.answer("Фото оставлено без изменений.")
-    await state.finish()
-
-# --- RECORDS ---
-@dp.callback_query_handler(lambda c: c.data.startswith("add_record_"))
-async def add_record_start(cb: types.CallbackQuery, state: FSMContext):
-    car_id = int(cb.data.split("_")[2])
-    await state.update_data(car_id=car_id)
-    await cb.message.answer("Введите тип работы:")
-    await RecordStates.work_type.set()
-
-@dp.message_handler(state=RecordStates.work_type)
-async def record_work(msg: types.Message, state: FSMContext):
-    await state.update_data(work_type=msg.text)
-    await msg.answer("Введите стоимость:")
-    await RecordStates.cost.set()
-
-@dp.message_handler(state=RecordStates.cost)
-async def record_cost(msg: types.Message, state: FSMContext):
-    try:
-        cost = float(msg.text)
-    except:
-        await msg.answer("Введите число!")
-        return
-    await state.update_data(cost=cost)
-    await msg.answer("Введите дату (например 2026-03-19):")
-    await RecordStates.date.set()
-
-@dp.message_handler(state=RecordStates.date)
-async def record_date(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    car_id = data['car_id']
-    work_type = data['work_type']
-    cost = data['cost']
-    date = msg.text
-    cursor.execute("INSERT INTO records(car_id, work_type, cost, date) VALUES (?,?,?,?)",
-                   (car_id, work_type, cost, date))
-    conn.commit()
-    await msg.answer("Запись добавлена!")
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data.startswith("delete_record_"))
-async def delete_record(cb: types.CallbackQuery):
-    record_id = int(cb.data.split("_")[2])
-    cursor.execute("DELETE FROM records WHERE id=?", (record_id,))
-    conn.commit()
-    await cb.message.answer("Запись удалена!")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("edit_record_"))
-async def edit_record_start(cb: types.CallbackQuery, state: FSMContext):
-    record_id = int(cb.data.split("_")[2])
-    await state.update_data(record_id=record_id)
+def get_car_records_keyboard(car_id):
+    cursor.execute("SELECT id, work_type FROM records WHERE car_id=?", (car_id,))
+    records = cursor.fetchall()
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Изменить тип работы", callback_data="edit_record_work"))
-    kb.add(InlineKeyboardButton("Изменить стоимость", callback_data="edit_record_cost"))
-    kb.add(InlineKeyboardButton("Изменить дату", callback_data="edit_record_date"))
-    await cb.message.answer("Выберите что редактировать:", reply_markup=kb)
+    for rec_id, work_type in records:
+        kb.add(InlineKeyboardButton(text=work_type, callback_data=f"record_{rec_id}"))
+    kb.add(InlineKeyboardButton("⬅ Назад", callback_data="back_to_cars"))
+    return kb
 
-@dp.callback_query_handler(lambda c: c.data=="edit_record_work", state="*")
-async def edit_record_work_cb(cb: types.CallbackQuery):
-    await cb.message.answer("Введите новый тип работы:")
-    await RecordStates.edit_work_type.set()
+# ================== Handlers ==================
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("Добавить машину"), KeyboardButton("Мои машины"))
+    await message.answer("Привет! Управляй своими машинами.", reply_markup=kb)
 
-@dp.message_handler(state=RecordStates.edit_work_type)
-async def edit_record_work(msg: types.Message, state: FSMContext):
+@dp.message_handler(lambda msg: msg.text == "Добавить машину")
+async def add_car_start(message: types.Message):
+    await message.answer("Введите название машины:")
+    await AddCar.name.set()
+
+@dp.message_handler(state=AddCar.name)
+async def add_car_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Прикрепите фото машины или напишите /skip, чтобы пропустить:")
+    await AddCar.photo.set()
+
+@dp.message_handler(content_types=["photo"], state=AddCar.photo)
+async def add_car_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    record_id = data['record_id']
-    cursor.execute("UPDATE records SET work_type=? WHERE id=?", (msg.text, record_id))
+    photo_id = message.photo[-1].file_id
+    cursor.execute("INSERT INTO cars (user_id, name, photo) VALUES (?, ?, ?)",
+                   (message.from_user.id, data['name'], photo_id))
     conn.commit()
-    await msg.answer("Тип работы обновлён!")
+    await message.answer("Машина добавлена ✅")
     await state.finish()
 
-@dp.callback_query_handler(lambda c: c.data=="edit_record_cost", state="*")
-async def edit_record_cost_cb(cb: types.CallbackQuery):
-    await cb.message.answer("Введите новую стоимость:")
-    await RecordStates.edit_cost.set()
-
-@dp.message_handler(state=RecordStates.edit_cost)
-async def edit_record_cost(msg: types.Message, state: FSMContext):
-    try:
-        cost = float(msg.text)
-    except:
-        await msg.answer("Введите число!")
-        return
+@dp.message_handler(commands=["skip"], state=AddCar.photo)
+async def skip_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    record_id = data['record_id']
-    cursor.execute("UPDATE records SET cost=? WHERE id=?", (cost, record_id))
+    cursor.execute("INSERT INTO cars (user_id, name) VALUES (?, ?)",
+                   (message.from_user.id, data['name']))
     conn.commit()
-    await msg.answer("Стоимость обновлена!")
+    await message.answer("Машина добавлена без фото ✅")
     await state.finish()
 
-@dp.callback_query_handler(lambda c: c.data=="edit_record_date", state="*")
-async def edit_record_date_cb(cb: types.CallbackQuery):
-    await cb.message.answer("Введите новую дату (например 2026-03-19):")
-    await RecordStates.edit_date.set()
+@dp.message_handler(lambda msg: msg.text == "Мои машины")
+async def my_cars(message: types.Message):
+    kb = get_cars_keyboard(message.from_user.id)
+    if kb.inline_keyboard:
+        await message.answer("Выберите машину:", reply_markup=kb)
+    else:
+        await message.answer("У вас пока нет машин.")
 
-@dp.message_handler(state=RecordStates.edit_date)
-async def edit_record_date(msg: types.Message, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data.startswith("car_"))
+async def car_selected(callback_query: types.CallbackQuery):
+    car_id = int(callback_query.data.split("_")[1])
+    cursor.execute("SELECT name, photo FROM cars WHERE id=?", (car_id,))
+    car = cursor.fetchone()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Добавить запись", callback_data=f"addrec_{car_id}"))
+    kb.add(InlineKeyboardButton("Редактировать машину", callback_data=f"editcar_{car_id}"))
+    kb.add(InlineKeyboardButton("Удалить машину", callback_data=f"delcar_{car_id}"))
+    kb.add(InlineKeyboardButton("Посмотреть записи", callback_data=f"records_{car_id}"))
+    if car[1]:
+        await bot.send_photo(callback_query.from_user.id, photo=car[1], caption=car[0], reply_markup=kb)
+    else:
+        await bot.send_message(callback_query.from_user.id, text=car[0], reply_markup=kb)
+
+# ================== Add Record ==================
+@dp.callback_query_handler(lambda c: c.data.startswith("addrec_"))
+async def add_record_start(callback_query: types.CallbackQuery, state: FSMContext):
+    car_id = int(callback_query.data.split("_")[1])
+    await state.update_data(car_id=car_id)
+    await callback_query.message.answer("Введите тип работы:")
+    await AddRecord.work_type.set()
+
+@dp.message_handler(state=AddRecord.work_type)
+async def add_record_work(message: types.Message, state: FSMContext):
+    await state.update_data(work_type=message.text)
+    await message.answer("Введите стоимость:")
+    await AddRecord.cost.set()
+
+@dp.message_handler(state=AddRecord.cost)
+async def add_record_cost(message: types.Message, state: FSMContext):
+    await state.update_data(cost=message.text)
+    await message.answer("Введите дату (например 2026-03-19):")
+    await AddRecord.date.set()
+
+@dp.message_handler(state=AddRecord.date)
+async def add_record_date(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    record_id = data['record_id']
-    cursor.execute("UPDATE records SET date=? WHERE id=?", (msg.text, record_id))
+    cursor.execute(
+        "INSERT INTO records (car_id, work_type, cost, date) VALUES (?, ?, ?, ?)",
+        (data['car_id'], data['work_type'], data['cost'], data['date'])
+    )
     conn.commit()
-    await msg.answer("Дата обновлена!")
+    await message.answer("Запись добавлена ✅")
     await state.finish()
 
-# --- RUN ---
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+# ================== Records view ==================
+@dp.callback_query_handler(lambda c: c.data.startswith("records_"))
+async def view_records(callback_query: types.CallbackQuery):
+    car_id = int(callback_query.data.split("_")[1])
+    kb = get_car_records_keyboard(car_id)
+    await callback_query.message.answer("Выберите запись:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data == "back_to_cars")
+async def back_to_cars(callback_query: types.CallbackQuery):
+    kb = get_cars_keyboard(callback_query.from_user.id)
+    await callback_query.message.answer("Выберите машину:", reply_markup=kb)
+
+# ================== Webhook ==================
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info("Webhook set")
+
+async def on_shutdown(dp):
+    logging.warning('Shutting down..')
+    await bot.delete_webhook()
+    await dp.storage.close()
+    await dp.storage.wait_closed()
+    logging.warning('Bye!')
+
+if __name__ == '__main__':
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
